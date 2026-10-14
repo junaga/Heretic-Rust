@@ -3,20 +3,31 @@
     "repository": "https://github.com/p-e-w/heretic",
     "tag": "v1.4.0",
     "commit": "6ea3b8d778d047b4b3b7c5b843e21c5bea98ee8d",
-    "parity_verified": false
+    "parity_verified": true,
+    "verification_scope": "Deterministic CPU fixtures and mocked external service and accelerator APIs; not certification of every model or device"
   },
   "implementation": {
     "application": "Rust",
     "interoperability": "PyO3 with CPython third-party frameworks",
     "imports_upstream_heretic_in_production": false,
-    "python_free": false
+    "python_free": false,
+    "application_feature_surface_implemented": true,
+    "native_utilities": [
+      "Configuration parsing, validation and serialization",
+      "Terminal menus, multi-selection, text and password input, notebook-compatible numbered input",
+      "JSON bridge, TOML output, HTTP reproduction downloads",
+      "CPU identification, resident RAM, timestamps and durations",
+      "Temporary directories, random seeds, SHA-256 hashes",
+      "Model cards and reproduction guides"
+    ],
+    "retained_python_dependencies": "ML, dataset, optimization, evaluation and optional research frameworks; IFEval retains immutabledict and langdetect internally"
   },
   "verification": {
-    "passed_tests": 12,
+    "passed_tests": 22,
     "failed_tests": 0,
     "ignored_tests_in_full_run": 0,
     "backend": "CPU",
-    "fixture": "Deterministic 4-layer Llama, 16 hidden dimensions, 32 vocabulary entries",
+    "fixture": "Deterministic small Llama, Qwen2 and Qwen3 MoE models; real CPU bitsandbytes NF4; local datasets and lm-eval task",
     "exact_comparisons": [
       "Exported default configuration",
       "CLI configuration overrides",
@@ -27,33 +38,43 @@
       "All adapter tensors for none/pre/full normalization, per-layer and interpolated global directions",
       "Four Optuna trials including TPE exploitation: parameters, metrics and objectives",
       "Selected adapter tensors against upstream",
-      "Byte-identical native adapter reproduction from exported v2 record"
+      "Byte-identical native adapter reproduction from exported v2 record",
+      "Qwen2 and Qwen3 MoE layer discovery, residuals and ablation",
+      "Real CPU NF4 loading, ablation and merged model tensors",
+      "CUDA, ROCm, XPU, MLU, SDAA, MUSA, NPU and MPS metadata schemas via test doubles"
     ],
     "functional_checks": [
-      "Checkpoint resume",
+      "Checkpoint resume, additional trials and real SIGINT recovery",
       "Merged export and reset after merge",
       "Text and saved-dataset slicing",
       "Residual geometry",
       "Four PaCMAP plots and animated GIF",
-      "Configuration precedence and privacy exclusions"
+      "Configuration precedence and privacy exclusions",
+      "Automatic batch calibration and common response-prefix/chain-of-thought closure",
+      "Evaluation of a separate model and streaming chat",
+      "Legacy v1 and v2 reproduction, interactive and headless hash verification",
+      "Real lm-eval execution and original-versus-modified comparison on a local task",
+      "Publishing, model-card preservation, revision pinning, reproduction artifacts and archive collection with SDK test doubles",
+      "Package/source/hardware mismatch checks and error propagation",
+      "Clean runtime without questionary, tomli-w, py-cpuinfo or pydantic-settings"
     ]
   },
   "unverified": [
     "CUDA/ROCm/XPU/MPS/NPU and other accelerators",
     "4-bit quantization and quantized merging on accelerator hardware",
-    "Real pretrained MoE, hybrid and multimodal models",
+    "Large pretrained, hybrid and multimodal models (small Qwen3 MoE is covered)",
     "Live Hugging Face publishing and archive collection",
     "Interactive notebook flows",
-    "Full Language Model Evaluation Harness benchmark runs"
+    "Full public Language Model Evaluation Harness benchmark datasets (local task is covered)"
   ],
   "differences": [
     "Third-party Python framework runtime remains required; no upstream Heretic Python application dependency",
-    "Terminal presentation differs",
+    "Terminal presentation differs; framework progress displays use their own presentation",
     "Additional --non-interactive, --output and --check-config options",
     "Native local exports include reproduction metadata",
     "Reproduction metadata identifies the Rust implementation"
   ],
-  "full_parity_established": false,
-  "repeat": "HERETIC_UPSTREAM=\"/usr/local/dev/Heretic-Rust/tmp/upstream\" make -C /usr/local/dev/Heretic-Rust parity",
+  "universal_parity_established": false,
+  "repeat": "HERETIC_UPSTREAM=\"/usr/local/dev/Heretic-Rust/tmp/upstream\" HERETIC_RUNTIME_ENV=\"/usr/local/dev/Heretic-Rust/tmp/runtime-env\" make -C /usr/local/dev/Heretic-Rust parity",
   "run": "/usr/local/dev/Heretic-Rust/target/release/heretic MODEL"
 }

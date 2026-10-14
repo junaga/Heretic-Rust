@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Application workflow ported from Heretic v1.4.0, Copyright Philipp Emanuel Weidmann + contributors.
 use crate::{
-    config::{merge, Settings},
+    config::Settings,
     core::*,
     model::{load_prompts, Model},
     python::*,
@@ -94,78 +94,14 @@ impl<'py> Evaluator<'py> {
         ))
     }
 }
-pub fn select(py: Python<'_>, message: &str, choices: &[String]) -> Result<Option<usize>> {
-    if notebook(py) {
-        println!("{message}");
-        for (i, choice) in choices.iter().enumerate() {
-            println!("[{}] {choice}", i + 1);
-        }
-        loop {
-            let input = module(py, "builtins")?
-                .m("input", &[j(py, "Enter number: ")?], &[])?
-                .str()?;
-            if let Ok(i) = input.trim().parse::<usize>() {
-                if i > 0 && i <= choices.len() {
-                    return Ok(Some(i - 1));
-                }
-            }
-            println!("Please enter a number between 1 and {}", choices.len());
-        }
-    }
-    let result = module(py, "questionary")?
-        .m("select", &[j(py, message)?, j(py, choices)?], &[])?
-        .m("ask", &[], &[])?;
-    if result.is_none() {
-        return Ok(None);
-    }
-    let s = result.str()?;
-    Ok(choices.iter().position(|c| *c == s))
+pub fn select(_py: Python<'_>, message: &str, choices: &[String]) -> Result<Option<usize>> {
+    crate::ui::select(message, choices)
 }
-pub(crate) fn notebook(py: Python<'_>) -> bool {
-    if ["COLAB_GPU", "KAGGLE_KERNEL_RUN_TYPE"]
-        .iter()
-        .any(|k| std::env::var(k).is_ok_and(|v| !v.is_empty()))
-    {
-        return true;
-    }
-    module(py, "IPython")
-        .and_then(|m| m.m("get_ipython", &[], &[]))
-        .is_ok_and(|s| {
-            s.a("__class__.__name__")
-                .and_then(|n| n.str())
-                .is_ok_and(|s| s == "ZMQInteractiveShell" || s == "Shell")
-                || s.a("__class__")
-                    .and_then(|n| n.str())
-                    .is_ok_and(|s| s.contains("google.colab"))
-        })
-}
-pub(crate) fn text(py: Python<'_>, message: &str, default: &str) -> Result<String> {
-    if notebook(py) {
-        let input = module(py, "builtins")?
-            .m("input", &[j(py, format!("{message} [{default}]: "))?], &[])?
-            .str()?;
-        return Ok(if input.is_empty() {
-            default.to_owned()
-        } else {
-            input
-        });
-    }
-    let r = module(py, "questionary")?
-        .m("text", &[j(py, message)?], &[("default", j(py, default)?)])?
-        .m("ask", &[], &[])?;
-    if r.is_none() {
-        Ok(String::new())
-    } else {
-        r.str()
-    }
+pub(crate) fn text(_py: Python<'_>, message: &str, default: &str) -> Result<String> {
+    crate::ui::text(message, default)
 }
 fn print_memory(py: Python<'_>) -> Result<()> {
-    let bytes = module(py, "psutil")?
-        .a("Process")?
-        .c(&[], &[])?
-        .m("memory_info", &[], &[])?
-        .a("rss")?
-        .f64()?;
+    let bytes = crate::native::resident_memory()? as f64;
     println!("Resident system RAM: {:.2} GB", bytes / 1073741824.0);
     for backend in ["cuda", "xpu"] {
         if let Ok(device) = module(py, "torch")?.a(backend) {
@@ -184,9 +120,22 @@ fn print_memory(py: Python<'_>) -> Result<()> {
                     allocated / 1073741824.0,
                     reserved / 1073741824.0
                 );
-                break;
+                return Ok(());
             }
         }
+    }
+    let torch = module(py, "torch")?;
+    if !torch
+        .a("backends.mps")?
+        .m("is_available", &[], &[])?
+        .empty()?
+    {
+        let mps = torch.a("mps")?;
+        println!(
+            "Allocated MPS memory: {:.2} GB; driver allocated: {:.2} GB",
+            mps.m("current_allocated_memory", &[], &[])?.f64()? / 1073741824.0,
+            mps.m("driver_allocated_memory", &[], &[])?.f64()? / 1073741824.0
+        );
     }
     Ok(())
 }
@@ -283,9 +232,11 @@ fn optimize(m: &mut Model<'_>, eval: &Evaluator<'_>, d: &O<'_>, study: &O<'_>) -
     let start = Instant::now();
     let initial = study.a("trials")?.len()?;
     for index in initial..m.settings.int("n_trials") {
+        py.check_signals()?;
         let trial = study.m("ask", &[], &[])?;
-        set_attr(&trial, "index", index + 1)?;
         let attempt = (|| -> Result<((f64, f64), f64, usize)> {
+            deliver_interrupt()?;
+            set_attr(&trial, "index", index + 1)?;
             let (direction, parameters) = suggest_parameters(m, &trial)?;
             println!(
                 "Running trial {} of {}",
@@ -294,22 +245,47 @@ fn optimize(m: &mut Model<'_>, eval: &Evaluator<'_>, d: &O<'_>, study: &O<'_>) -
             );
             m.reset()?;
             m.abliterate(d, direction, &parameters)?;
-            eval.evaluate(m)
+            let result = eval.evaluate(m)?;
+            set_attr(&trial, "kl_divergence", result.1)?;
+            set_attr(&trial, "refusals", result.2)?;
+            set_attr(&trial, "base_refusals", eval.base_refusals)?;
+            set_attr(&trial, "n_bad_prompts", eval.bad.len())?;
+            Ok(result)
         })();
         match attempt {
-            Ok((objectives, kl, refusals)) => {
-                set_attr(&trial, "kl_divergence", kl)?;
-                set_attr(&trial, "refusals", refusals)?;
-                set_attr(&trial, "base_refusals", eval.base_refusals)?;
-                set_attr(&trial, "n_bad_prompts", eval.bad.len())?;
-                study.m("tell", &[trial, j(py, [objectives.0, objectives.1])?], &[])?;
-                println!("Elapsed: {:.1}s", start.elapsed().as_secs_f64());
+            Ok((objectives, _kl, _refusals)) => {
+                if let Err(e) = study.m(
+                    "tell",
+                    &[trial.clone(), j(py, [objectives.0, objectives.1])?],
+                    &[],
+                ) {
+                    if interrupted(&e) {
+                        study.m(
+                            "tell",
+                            &[trial],
+                            &[
+                                ("state", module(py, "optuna.trial")?.a("TrialState.PRUNED")?),
+                                ("skip_if_finished", j(py, true)?),
+                            ],
+                        )?;
+                        return Ok(());
+                    }
+                    return Err(e);
+                }
+                let elapsed = start.elapsed().as_secs_f64();
+                println!("Elapsed: {}", crate::native::format_duration(elapsed));
+                if index + 1 < m.settings.int("n_trials") {
+                    let remaining = elapsed / (index + 1 - initial) as f64
+                        * (m.settings.int("n_trials") - index - 1) as f64;
+                    println!(
+                        "Estimated remaining time: {}",
+                        crate::native::format_duration(remaining)
+                    );
+                }
                 print_memory(py)?;
             }
             Err(e) => {
-                let interrupted = e
-                    .downcast_ref::<pyo3::PyErr>()
-                    .is_some_and(|e| e.is_instance_of::<pyo3::exceptions::PyKeyboardInterrupt>(py));
+                let interrupted = crate::python::interrupted(&e);
                 let state = module(py, "optuna.trial")?.a(if interrupted {
                     "TrialState.PRUNED"
                 } else {
@@ -323,7 +299,11 @@ fn optimize(m: &mut Model<'_>, eval: &Evaluator<'_>, d: &O<'_>, study: &O<'_>) -
             }
         }
     }
-    set_attr(study, "finished", true)?;
+    set_attr(
+        study,
+        "finished",
+        study.a("trials")?.len()? == m.settings.int("n_trials"),
+    )?;
     Ok(())
 }
 pub fn restore(m: &mut Model<'_>, d: &O<'_>, attrs: &Value) -> Result<()> {
@@ -356,9 +336,7 @@ pub fn run(
     let torch =
         module(py, "torch").context("Install the project runtime dependencies in .venv first")?;
     if settings.get("seed").is_null() {
-        let seed = module(py, "random")?
-            .m("randint", &[j(py, 0)?, j(py, u32::MAX)?], &[])?
-            .usize()?;
+        let seed = rand::random::<u32>();
         settings.set("seed", seed);
     }
     let seed = j(py, settings.get("seed"))?;
@@ -414,8 +392,12 @@ pub fn run(
                             .as_str()
                             .context("Checkpoint settings missing")?,
                     )?;
-                    merge(&mut settings.0, saved);
-                    settings.validate()?;
+                    // Keep current presentation-only settings; saved numerical settings
+                    // and complete dataset specifications have highest priority.
+                    for (key, value) in saved.as_object().context("Invalid checkpoint settings")? {
+                        settings.0[key] = value.clone();
+                    }
+                    settings = Settings::from_value(settings.0)?;
                 }
                 Some(1) => {
                     drop(storage);
@@ -425,6 +407,9 @@ pub fn run(
                 _ => return Ok(()),
             }
         }
+    }
+    if noninteractive && output.is_some() && settings.get("export_strategy").is_null() {
+        bail!("--non-interactive --output requires --export-strategy merge or adapter")
     }
     let mut model = Model::new(py, settings)?;
     print_memory(py)?;
@@ -521,7 +506,7 @@ pub fn run(
             crate::reproduction::save(&mut model, &path, &attrs, &checkpoint)?;
             crate::reproduction::verify_hashes(&path, &info)?;
         } else if !noninteractive {
-            actions(&mut model, &d, &attrs, &checkpoint)?;
+            actions(&mut model, &d, &attrs, &checkpoint, Some(&info), None)?;
         }
         return Ok(());
     }
@@ -609,10 +594,26 @@ pub fn run(
             Some(i) if i < best.len() => {
                 let a = &attrs[best[i]];
                 restore(&mut model, &d, a)?;
-                actions(&mut model, &d, a, &checkpoint)?;
+                actions(
+                    &mut model,
+                    &d,
+                    a,
+                    &checkpoint,
+                    None,
+                    Some(study.a("trials")?.len()?),
+                )?;
             }
             Some(i) if i == best.len() => {
-                let n: usize = text(py, "Additional trials:", "")?.parse().unwrap_or(0);
+                let n = loop {
+                    let value = text(py, "How many additional trials do you want to run?", "")?;
+                    if value.is_empty() {
+                        break 0;
+                    }
+                    match value.parse::<usize>() {
+                        Ok(n) if n > 0 => break n,
+                        _ => println!("Please enter a number greater than 0."),
+                    }
+                };
                 if n == 0 {
                     continue;
                 }
@@ -631,7 +632,14 @@ pub fn run(
         }
     }
 }
-fn actions(m: &mut Model<'_>, d: &O<'_>, attrs: &Value, checkpoint: &Path) -> Result<()> {
+fn actions(
+    m: &mut Model<'_>,
+    d: &O<'_>,
+    attrs: &Value,
+    checkpoint: &Path,
+    original: Option<&Value>,
+    trial_count: Option<usize>,
+) -> Result<()> {
     loop {
         let choices = [
             "Save the model to a local folder",
@@ -650,11 +658,22 @@ fn actions(m: &mut Model<'_>, d: &O<'_>, attrs: &Value, checkpoint: &Path) -> Re
                     let path = text(m.py, "Path to the folder:", "")?;
                     if !path.is_empty() {
                         crate::reproduction::save(m, Path::new(&path), attrs, checkpoint)?;
+                        if let Some(info) = original {
+                            if info["version"] == "2" {
+                                crate::reproduction::verify_hashes(Path::new(&path), info)?;
+                            }
+                        }
                         restore(m, d, attrs)?;
                     }
                 }
                 1 => {
-                    crate::reproduction::upload(m, attrs, checkpoint)?;
+                    crate::reproduction::upload_context(
+                        m,
+                        attrs,
+                        checkpoint,
+                        original,
+                        trial_count,
+                    )?;
                     restore(m, d, attrs)?;
                 }
                 2 => {
@@ -683,7 +702,16 @@ fn actions(m: &mut Model<'_>, d: &O<'_>, attrs: &Value, checkpoint: &Path) -> Re
             return Ok(());
         }
         if let Err(e) = result {
-            eprintln!("Error: {e:#}");
+            // A failed merged export must not leave subsequent chat/benchmark actions
+            // operating on a model whose adapter has already been destroyed.
+            if m.needs_reload {
+                if let Err(reset) = restore(m, d, attrs) {
+                    eprintln!("Could not restore trial after export failure: {reset:#}");
+                }
+            }
+            if !interrupted(&e) {
+                eprintln!("Error: {e:#}");
+            }
         }
     }
 }
@@ -704,22 +732,29 @@ fn benchmark(m: &Model<'_>) -> Result<()> {
             )
         })
         .collect();
-    let selected = module(py, "questionary")?
-        .m(
-            "checkbox",
-            &[j(py, "Which benchmarks?")?, j(py, &labels)?],
-            &[],
-        )?
-        .m("ask", &[], &[])?;
-    if selected.is_none() {
+    let selected = crate::ui::multiple("Which benchmarks?", &labels)?;
+    if selected.is_empty() {
         return Ok(());
     }
-    let selected = selected.strings()?;
-    let compare = select(
+    let Some(scope) = select(
         py,
         "Benchmark scope",
         &["This model".into(), "Both original and modified".into()],
-    )? == Some(1);
+    )?
+    else {
+        return Ok(());
+    };
+    let compare = scope == 1;
+    let tasks: Vec<_> = selected
+        .into_iter()
+        .map(|i| available[i]["task"].as_str().unwrap().to_owned())
+        .collect();
+    let result = run_benchmarks(m, &tasks, compare)?;
+    println!("{}", serde_json::to_string_pretty(&result)?);
+    Ok(())
+}
+pub fn run_benchmarks(m: &Model<'_>, tasks: &[String], compare: bool) -> Result<Value> {
+    let py = m.py;
     let lm = module(py, "lm_eval.models.huggingface")?.a("HFLM")?.c(
         &[],
         &[
@@ -728,23 +763,17 @@ fn benchmark(m: &Model<'_>) -> Result<()> {
             ("batch_size", j(py, "auto")?),
         ],
     )?;
-    for b in available {
-        let label = format!(
-            "{}: {}",
-            b["name"].as_str().unwrap_or(""),
-            b["description"].as_str().unwrap_or("")
-        );
-        if !selected.contains(&label) {
-            continue;
-        }
-        let kw = vec![("model", lm.clone()), ("tasks", j(py, [&b["task"]])?)];
+    let mut output = serde_json::Map::new();
+    for task in tasks {
+        println!("Running benchmark {task}...");
+        let kw = vec![("model", lm.clone()), ("tasks", j(py, [task])?)];
         let result = module(py, "lm_eval")?.m("simple_evaluate", &[], &kw)?;
-        println!("{}: {}", b["name"], result.key("results")?.json()?);
-        if compare {
-            let ctx = m.model.m("disable_adapter", &[], &[])?;
-            ctx.m("__enter__", &[], &[])?;
+        let modified = result.key("results")?.key(task)?.json()?;
+        let original = if compare {
+            let context = m.model.m("disable_adapter", &[], &[])?;
+            context.m("__enter__", &[], &[])?;
             let result = module(py, "lm_eval")?.m("simple_evaluate", &[], &kw);
-            ctx.m(
+            let cleanup = context.m(
                 "__exit__",
                 &[
                     j(py, Value::Null)?,
@@ -752,9 +781,17 @@ fn benchmark(m: &Model<'_>) -> Result<()> {
                     j(py, Value::Null)?,
                 ],
                 &[],
-            )?;
-            println!("Original: {}", result?.key("results")?.json()?);
-        }
+            );
+            let result = result?;
+            cleanup?;
+            result.key("results")?.key(task)?.json()?
+        } else {
+            Value::Null
+        };
+        output.insert(
+            task.clone(),
+            json!({"modified":modified,"original":original}),
+        );
     }
-    Ok(())
+    Ok(Value::Object(output))
 }

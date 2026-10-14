@@ -20,55 +20,8 @@ fn upstream<'py>(py: Python<'py>) -> Result<O<'py>> {
     module(py, "sys")?.set("argv", &j(py, ["heretic"])?)?;
     module(py, "heretic.model")
 }
-pub fn fixture(py: Python<'_>, path: &Path) -> Result<()> {
-    let tr = module(py, "transformers")?;
-    let word=module(py,"tokenizers.models")?.a("WordLevel")?.c(&[],&[("vocab",j(py,json!({"[UNK]":0,"[PAD]":1,"[EOS]":2,"What":3,"is":4,"1":5,"+":6,"?":7,"Hello":8,"world":9,"Tell":10,"me":11,"a":12,"story":13,"How":14,"are":15,"you":16,"today":17,"Good":18,"morning":19,"sun":20,"moon":21,"night":22,"day":23,"sky":24,"blue":25,"green":26,"red":27,"color":28,"the":29,"of":30,"Write":31}))?),("unk_token",j(py,"[UNK]")?)])?;
-    let backend = module(py, "tokenizers")?.a("Tokenizer")?.c(&[word], &[])?;
-    backend.set(
-        "pre_tokenizer",
-        &module(py, "tokenizers.pre_tokenizers")?
-            .a("Whitespace")?
-            .c(&[], &[])?,
-    )?;
-    let tokenizer = tr.a("PreTrainedTokenizerFast")?.c(
-        &[],
-        &[
-            ("tokenizer_object", backend),
-            ("unk_token", j(py, "[UNK]")?),
-            ("pad_token", j(py, "[PAD]")?),
-            ("eos_token", j(py, "[EOS]")?),
-        ],
-    )?;
-    tokenizer.set("chat_template",&j(py,"{% for m in messages %}{{ m['content'] }}\n{% endfor %}{% if add_generation_prompt %}Assistant: {% endif %}")?)?;
-    tokenizer.m("save_pretrained", &[j(py, path.to_string_lossy())?], &[])?;
-    module(py, "torch")?.m("manual_seed", &[j(py, 1234)?], &[])?;
-    let config = tr.a("LlamaConfig")?.c(
-        &[],
-        &[
-            ("vocab_size", j(py, 32)?),
-            ("hidden_size", j(py, 16)?),
-            ("intermediate_size", j(py, 32)?),
-            ("num_hidden_layers", j(py, 4)?),
-            ("num_attention_heads", j(py, 2)?),
-            ("num_key_value_heads", j(py, 2)?),
-            ("max_position_embeddings", j(py, 256)?),
-            ("pad_token_id", j(py, 1)?),
-            ("eos_token_id", j(py, 2)?),
-            ("bos_token_id", j(py, 0)?),
-        ],
-    )?;
-    let model = tr.a("LlamaForCausalLM")?.c(&[config], &[])?;
-    model.m("save_pretrained", &[j(py, path.to_string_lossy())?], &[])?;
-    Ok(())
-}
-fn assert_close(py: Python<'_>, a: &O<'_>, b: &O<'_>) -> Result<()> {
-    module(py, "torch.testing")?.m(
-        "assert_close",
-        &[a.clone(), b.clone()],
-        &[("rtol", j(py, 0.0)?), ("atol", j(py, 0.0)?)],
-    )?;
-    Ok(())
-}
+mod common;
+use common::{assert_close, fixture};
 #[test]
 #[ignore = "requires installed framework dependencies and a pinned HERETIC_UPSTREAM checkout"]
 fn numerical_parity() -> Result<()> {
@@ -238,6 +191,143 @@ fn configuration_precedence_and_privacy() -> Result<()> {
         .is_none());
     Ok(())
 }
+
+#[test]
+#[ignore = "requires framework dependencies and HERETIC_UPSTREAM"]
+fn model_families_and_cpu_nf4_parity() -> Result<()> {
+    Python::with_gil(|py| -> Result<()> {
+        let up = upstream(py)?;
+        let root = tempfile::tempdir()?;
+        let torch = module(py, "torch")?;
+        torch.m("set_grad_enabled", &[j(py, false)?], &[])?;
+        torch.m("set_num_threads", &[j(py, 1)?], &[])?;
+        for (config, class, quantization) in [
+            ("Qwen2Config", "Qwen2ForCausalLM", "none"),
+            ("Qwen3MoeConfig", "Qwen3MoeForCausalLM", "none"),
+            ("LlamaConfig", "LlamaForCausalLM", "bnb_4bit"),
+        ] {
+            let path = root.path().join(class);
+            common::variant(py, &path, config, class)?;
+            let mut settings = Settings::default();
+            settings.set("model", path.to_string_lossy().to_string());
+            settings.set("dtypes", json!(["float32"]));
+            settings.set("device_map", "cpu");
+            settings.set("quantization", quantization);
+            settings.set("seed", 42);
+            settings.set("batch_size", 2);
+            settings.set("max_response_length", 2);
+            settings.set("response_prefix", "");
+            let os = module(py, "heretic.config")?.a("Settings")?.m(
+                "model_validate",
+                &[j(py, &settings.0)?],
+                &[],
+            )?;
+            torch.m("manual_seed", &[j(py, 99)?], &[])?;
+            let original = up.a("Model")?.c(&[os], &[])?;
+            torch.m("manual_seed", &[j(py, 99)?], &[])?;
+            let mut native = Model::new(py, settings)?;
+            let prompts = vec![
+                Prompt {
+                    system: "Hello".into(),
+                    user: "Hello world".into(),
+                },
+                Prompt {
+                    system: "Hello".into(),
+                    user: "Good morning".into(),
+                },
+            ];
+            let pp = list(
+                py,
+                &prompts
+                    .iter()
+                    .map(|p| {
+                        module(py, "heretic.utils")?
+                            .a("Prompt")?
+                            .c(&[j(py, &p.system)?, j(py, &p.user)?], &[])
+                    })
+                    .collect::<Result<Vec<_>>>()?,
+            )?;
+            assert_eq!(
+                native.components()?,
+                original
+                    .m("get_abliterable_components", &[], &[])?
+                    .strings()?
+            );
+            assert_close(
+                py,
+                &native.logprobs(&prompts)?,
+                &original.m("get_logprobs", &[pp.clone()], &[])?,
+            )?;
+            let residuals = native.residuals(&prompts)?;
+            assert_close(
+                py,
+                &residuals,
+                &original.m("get_residuals", &[pp.clone()], &[])?,
+            )?;
+            let dirs = norm(&residuals.m("mean", &[], &[("dim", j(py, 0)?)])?, 1)?;
+            let mut params = Parameters::new();
+            let op = dict(py);
+            for c in native.components()? {
+                let p = AbliterationParameters {
+                    max_weight: 1.1,
+                    max_weight_position: 2.0,
+                    min_weight: 0.1,
+                    min_weight_distance: 1.8,
+                };
+                op.m(
+                    "__setitem__",
+                    &[
+                        j(py, &c)?,
+                        up.a("AbliterationParameters")?.c(
+                            &[
+                                j(py, p.max_weight)?,
+                                j(py, p.max_weight_position)?,
+                                j(py, p.min_weight)?,
+                                j(py, p.min_weight_distance)?,
+                            ],
+                            &[],
+                        )?,
+                    ],
+                    &[],
+                )?;
+                params.insert(c, p);
+            }
+            original.m("abliterate", &[dirs.clone(), j(py, Some(1.25))?, op], &[])?;
+            native.abliterate(&dirs, Some(1.25), &params)?;
+            assert_close(
+                py,
+                &native.logprobs(&prompts)?,
+                &original.m("get_logprobs", &[pp], &[])?,
+            )?;
+            for model in [native.model.clone(), original.a("model")?] {
+                model
+                    .a("generation_config")?
+                    .set("eos_token_id", &j(py, (0..32).collect::<Vec<_>>())?)?;
+            }
+            let chat = json!([{"role":"system","content":"Hello"},{"role":"user","content":"Hello world"}]);
+            assert_eq!(
+                native.stream_chat(&chat)?,
+                original
+                    .m("stream_chat_response", &[j(py, &chat)?], &[])?
+                    .str()?
+            );
+            if quantization == "bnb_4bit" {
+                let expected = original.m("get_merged_model", &[], &[])?;
+                let actual = native.merged()?;
+                let expected = expected.m("state_dict", &[], &[])?;
+                for pair in actual
+                    .m("state_dict", &[], &[])?
+                    .m("items", &[], &[])?
+                    .list()?
+                {
+                    assert_close(py, &pair.item(1)?, &expected.key(&pair.item(0)?.str()?)?)?;
+                }
+            }
+            println!("Exact {class} / {quantization} parity passed");
+        }
+        Ok(())
+    })
+}
 #[test]
 #[ignore = "requires framework dependencies and HERETIC_UPSTREAM"]
 fn configuration_defaults_match_upstream() -> Result<()> {
@@ -291,6 +381,29 @@ fn configuration_overrides_match_upstream() -> Result<()> {
                 "42",
             ],
         ];
+        let mut cases = cases;
+        cases.extend([
+            vec![
+                "--model",
+                "example/model",
+                "--device-map",
+                "cpu=0,0=cuda:0",
+                "--max-memory",
+                "cpu=4GB,0=8GB",
+            ],
+            vec![
+                "--model",
+                "example/model",
+                "--refusal-markers",
+                "\"a,b\",sorry",
+            ],
+            vec![
+                "--model",
+                "example/model",
+                "--good-prompts",
+                "{\"dataset\":\"local.txt\",\"extra\":true}",
+            ],
+        ]);
         for args in cases {
             let argv: Vec<_> = std::iter::once("heretic").chain(args.clone()).collect();
             module(py, "sys")?.set("argv", &j(py, argv)?)?;
@@ -531,6 +644,140 @@ fn workflow_parity() -> Result<()> {
         heretic::reproduction::hash(&native.join("export/adapter_model.safetensors"))?,
         heretic::reproduction::hash(&native.join("reproduced/adapter_model.safetensors"))?
     );
+    // The interactive reproduction path must verify hashes too.
+    let mut command = Command::new(env!("CARGO_BIN_EXE_heretic"));
+    command
+        .arg("--reproduce")
+        .arg(native.join("export/reproduce/reproduce.json"))
+        .current_dir(&native)
+        .env("OMP_NUM_THREADS", "1");
+    let result = common::input(
+        &mut command,
+        &format!("1\n{}\n5\n", native.join("interactive-export").display()),
+    )?;
+    assert!(
+        result.status.success(),
+        "interactive reproduction failed: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(String::from_utf8_lossy(&result.stdout).contains("Hash matches"));
+    // Legacy v1 reproduction records have no hash-verification requirement.
+    let mut info: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(
+        native.join("export/reproduce/reproduce.json"),
+    )?)?;
+    info["version"] = json!("1");
+    info.as_object_mut().unwrap().remove("hashes");
+    let legacy = native.join("legacy.json");
+    std::fs::write(&legacy, serde_json::to_string(&info)?)?;
+    let result = Command::new(env!("CARGO_BIN_EXE_heretic"))
+        .arg("--reproduce")
+        .arg(&legacy)
+        .arg("--non-interactive")
+        .arg("--output")
+        .arg(native.join("legacy-export"))
+        .current_dir(&native)
+        .env("OMP_NUM_THREADS", "1")
+        .output()?;
+    assert!(
+        result.status.success(),
+        "legacy reproduction failed: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    // Additional trials preserve history, reusing the normal interactive menus.
+    let journal = native
+        .join("checkpoints")
+        .join(checkpoint_name(&settings.string("model")));
+    let best_count = Python::with_gil(|py| -> Result<usize> {
+        let study = common::load_study(py, &journal)?;
+        let metrics = study
+            .a("trials")?
+            .list()?
+            .iter()
+            .map(|t| {
+                let a = t.a("user_attrs")?.json()?;
+                Ok((
+                    a["refusals"].as_u64().unwrap() as usize,
+                    a["kl_divergence"].as_f64().unwrap(),
+                ))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(pareto_indices(&metrics).len())
+    })?;
+    let mut command = Command::new(env!("CARGO_BIN_EXE_heretic"));
+    command
+        .args(&args)
+        .current_dir(&native)
+        .env("OMP_NUM_THREADS", "1");
+    let result = common::input(&mut command, &format!("1\n{}\n1\n", best_count + 1))?;
+    assert!(
+        result.status.success(),
+        "additional trials failed: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    Python::with_gil(|py| -> Result<()> {
+        let study = common::load_study(py, &journal)?;
+        assert_eq!(study.a("trials")?.len()?, 5);
+        assert_eq!(study.a("user_attrs")?.json()?["finished"], true);
+        Ok(())
+    })?;
+    // Force a shared token so automatic prefix closure is exercised, with only
+    // runtime requirements installed and VIRTUAL_ENV selected by the embedder.
+    let prefix_model = root.join("prefix-model");
+    std::fs::create_dir_all(&prefix_model)?;
+    for entry in std::fs::read_dir(root.join("model"))? {
+        let source = entry?.path();
+        if source.is_file() {
+            std::fs::copy(&source, prefix_model.join(source.file_name().unwrap()))?;
+        }
+    }
+    let gen_path = prefix_model.join("generation_config.json");
+    let mut generation: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&gen_path)?)?;
+    generation["suppress_tokens"] = json!((1..32).collect::<Vec<_>>());
+    std::fs::write(gen_path, serde_json::to_string(&generation)?)?;
+    let mut automatic = args.clone();
+    let i = automatic
+        .iter()
+        .position(|v| v == "--response-prefix")
+        .unwrap();
+    automatic.drain(i..i + 2);
+    for (key, value) in [
+        ("--model", prefix_model.to_string_lossy().to_string()),
+        ("--batch-size", "0".into()),
+        ("--max-batch-size", "2".into()),
+        (
+            "--chain-of-thought-skips",
+            json!([["[UNK]", "[UNK][UNK]"]]).to_string(),
+        ),
+    ] {
+        let i = automatic.iter().position(|v| v == key).unwrap();
+        automatic[i + 1] = value;
+    }
+    let runtime = std::env::var("HERETIC_RUNTIME_ENV")
+        .unwrap_or_else(|_| format!("{}/.venv", env!("CARGO_MANIFEST_DIR")));
+    let result = Command::new(env!("CARGO_BIN_EXE_heretic"))
+        .args(&automatic)
+        .arg("--evaluate-model")
+        .arg(&prefix_model)
+        .arg("--non-interactive")
+        .env_remove("PYTHONPATH")
+        .env("VIRTUAL_ENV", runtime)
+        .env("OMP_NUM_THREADS", "1")
+        .current_dir(&native)
+        .output()?;
+    std::fs::write(
+        root.join("automatic.log"),
+        [&result.stdout[..], &result.stderr[..]].concat(),
+    )?;
+    assert!(
+        result.status.success(),
+        "automatic evaluation failed: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let text = String::from_utf8_lossy(&result.stdout);
+    assert!(text.contains("Chosen batch size"));
+    assert!(text.contains("[UNK][UNK]"));
+    assert!(text.contains("KL divergence: 0.0000"));
     println!("Full workflow, all four trials, selected adapter tensors and checkpoint resume match; logs: {}",root.display());
     Ok(())
 }

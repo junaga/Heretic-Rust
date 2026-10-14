@@ -17,8 +17,17 @@ path = "src/main.rs"
 anyhow = "1"
 pyo3 = { version = "0.23", features = ["auto-initialize"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["float_roundtrip"] }
 toml = "0.8"
+sha2 = "0.10"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+dialoguer = "0.11"
+rand = "0.8"
+sysinfo = "0.33"
+tempfile = "3"
+ureq = "2.12"
+
+[build-dependencies]
 sha2 = "0.10"
 
 [profile.release]

@@ -75,7 +75,12 @@ impl Settings {
         }
         let fields = schema();
         for (key, f) in fields["Settings"].as_object().unwrap() {
-            if let Some(raw) = env.get(&format!("HERETIC_{}", key.to_uppercase())) {
+            let variable = format!("HERETIC_{}", key.to_uppercase());
+            if let Some(raw) = env.get(&variable).or_else(|| {
+                env.iter()
+                    .find(|(k, _)| k.eq_ignore_ascii_case(&variable))
+                    .map(|(_, v)| v)
+            }) {
                 merge(
                     settings
                         .0
@@ -146,12 +151,22 @@ impl Settings {
                     if let Ok(Value::Array(a)) = serde_json::from_str::<Value>(raw) {
                         Value::Array(a)
                     } else {
-                        Value::Array(
-                            raw.split(',')
-                                .map(|s| Value::String(s.trim().trim_matches('"').to_owned()))
-                                .collect(),
-                        )
+                        Value::Array(cli_strings(raw)?.into_iter().map(Value::String).collect())
                     }
+                } else if f["annotation"]
+                    .as_str()
+                    .is_some_and(|s| s.contains("Dict["))
+                    && !raw.trim_start().starts_with('{')
+                    && raw.contains('=')
+                {
+                    let mut object = Map::new();
+                    for pair in cli_strings(raw)? {
+                        let (k, v) = pair
+                            .split_once('=')
+                            .context("Dictionary options require key=value")?;
+                        object.insert(k.to_owned(), Value::String(v.to_owned()));
+                    }
+                    Value::Object(object)
                 } else {
                     parse_field(raw, f)?
                 };
@@ -198,10 +213,62 @@ impl Settings {
                         .map(|(k, f)| (k.clone(), f["default"].clone()))
                         .collect(),
                 );
-                merge(&mut base, value.clone());
+                if let Some(object) = value.as_object() {
+                    for (k, v) in object {
+                        if fields["DatasetSpecification"].get(k).is_some() {
+                            base[k] = v.clone();
+                        }
+                    }
+                } else {
+                    base = value.clone();
+                }
                 result.0[key] = base;
             } else {
                 result.0[key] = value.clone();
+            }
+        }
+        // Match Pydantic's non-strict scalar coercions for TOML/checkpoint input.
+        for (key, field) in fields["Settings"].as_object().unwrap() {
+            let annotation = field["annotation"].as_str().unwrap_or("");
+            if matches!(annotation, "int" | "int | None" | "float" | "bool") {
+                if let Some(raw) = result.0[key].as_str() {
+                    result.0[key] = parse_field(raw, field)?;
+                }
+                if annotation.starts_with("int") {
+                    if let Some(v) = result.0[key].as_bool() {
+                        result.0[key] = Value::from(i64::from(v));
+                    }
+                    if result.0[key].is_f64() {
+                        if let Some(v) = result.0[key].as_f64() {
+                            if v.is_finite()
+                                && v.fract() == 0.0
+                                && v >= i64::MIN as f64
+                                && v < i64::MAX as f64
+                            {
+                                result.0[key] = Value::from(v as i64);
+                            }
+                        }
+                    }
+                } else if annotation == "float" {
+                    if let Some(v) = result.0[key].as_bool() {
+                        result.0[key] = Value::from(u8::from(v) as f64);
+                    } else if let Some(v) = result.0[key].as_f64() {
+                        result.0[key] = Value::from(v);
+                    }
+                } else if annotation == "bool" {
+                    if result.0[key] == 0 {
+                        result.0[key] = Value::Bool(false);
+                    } else if result.0[key] == 1 {
+                        result.0[key] = Value::Bool(true);
+                    }
+                }
+            }
+        }
+        if let Some(benchmarks) = result.0["benchmarks"].as_array_mut() {
+            for b in benchmarks {
+                if let Some(m) = b.as_object_mut() {
+                    m.retain(|k, _| ["task", "name", "description"].contains(&k.as_str()));
+                }
             }
         }
         result.validate()?;
@@ -265,6 +332,12 @@ impl Settings {
         }
         if self.float("kl_divergence_scale") <= 0.0 {
             bail!("kl_divergence_scale must be positive")
+        }
+        if !self.0["max_shard_size"].is_string()
+            && !self.0["max_shard_size"].is_i64()
+            && !self.0["max_shard_size"].is_u64()
+        {
+            bail!("max_shard_size must be an integer or a string")
         }
         for key in [
             "good_prompts",
@@ -366,6 +439,47 @@ impl Settings {
         }
         v
     }
+}
+fn cli_strings(raw: &str) -> Result<Vec<String>> {
+    if let Ok(Value::String(s)) = serde_json::from_str::<Value>(raw) {
+        return Ok(vec![s]);
+    }
+    let mut pieces = Vec::new();
+    let mut start = 0;
+    let mut quoted = false;
+    let mut escaped = false;
+    for (i, c) in raw.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if quoted && c == '\\' {
+            escaped = true;
+            continue;
+        }
+        if c == '"' {
+            quoted = !quoted;
+        }
+        if c == ',' && !quoted {
+            pieces.push(&raw[start..i]);
+            start = i + 1;
+        }
+    }
+    if quoted {
+        bail!("Unclosed quote in list option")
+    }
+    pieces.push(&raw[start..]);
+    pieces
+        .into_iter()
+        .map(|s| {
+            let s = s.trim();
+            if s.starts_with('"') {
+                Ok(serde_json::from_str::<String>(s)?)
+            } else {
+                Ok(s.to_owned())
+            }
+        })
+        .collect()
 }
 fn parse_value(raw: &str, default: &Value) -> Result<Value> {
     if default.is_string() {

@@ -8,11 +8,17 @@ use std::path::Path;
 pub fn analyze(m: &Model<'_>, good: &O<'_>, bad: &O<'_>) -> Result<()> {
     if m.settings.flag("print_residual_geometry") {
         if let Err(e) = geometry(m, good, bad) {
+            if !crate::python::import_error(&e) {
+                return Err(e);
+            }
             eprintln!("Residual geometry unavailable: {e:#}. Install geom-median and scikit-learn for research support.");
         }
     }
     if m.settings.flag("plot_residuals") {
         if let Err(e) = plots(m, good, bad) {
+            if !crate::python::import_error(&e) {
+                return Err(e);
+            }
             eprintln!("Residual plots unavailable: {e:#}. Install geom-median, pacmap, imageio and matplotlib for research support.");
         }
     }

@@ -50,28 +50,29 @@ fn run() -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&settings.0)?);
         return Ok(());
     }
-    // Discover only the project-local environment. Never modify the user's global Python installation.
-    if std::env::var_os("VIRTUAL_ENV").is_none() && std::env::var_os("PYTHONPATH").is_none() {
-        let site = Path::new(env!("CARGO_MANIFEST_DIR")).join(".venv/lib");
-        if site.exists() {
-            for python in std::fs::read_dir(site)? {
-                let candidate = python?.path().join("site-packages");
-                if candidate.is_dir() {
-                    std::env::set_var("PYTHONPATH", candidate);
-                    break;
-                }
-            }
-        }
-    }
     if std::env::var_os("PYTORCH_ALLOC_CONF").is_none()
         && std::env::var_os("PYTORCH_CUDA_ALLOC_CONF").is_none()
     {
         std::env::set_var("PYTORCH_ALLOC_CONF", "expandable_segments:True");
     }
-    pyo3::Python::with_gil(|py| workflow::run(py, settings, output, noninteractive))
+    pyo3::Python::with_gil(|py| {
+        heretic::python::configure_runtime(py)?;
+        // Embedded CPython otherwise leaves SIGINT at the process default, which
+        // would terminate an active trial before it can be marked as pruned.
+        let signal = heretic::python::module(py, "signal")?;
+        let handler = heretic::python::O(
+            pyo3::wrap_pyfunction!(heretic::python::handle_sigint, py)?.into_any(),
+        );
+        signal.m("signal", &[signal.a("SIGINT")?, handler], &[])?;
+        workflow::run(py, settings, output, noninteractive)
+    })
 }
 fn main() {
     if let Err(e) = run() {
+        if heretic::python::interrupted(&e) {
+            eprintln!("Shutting down...");
+            return;
+        }
         eprintln!("Error: {e:#}");
         std::process::exit(1);
     }

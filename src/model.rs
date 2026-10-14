@@ -108,6 +108,9 @@ impl<'py> Model<'py> {
                     break;
                 }
                 Err(e) => {
+                    if control_flow(&e) {
+                        return Err(e);
+                    }
                     eprintln!("  Failed: {e:#}");
                     last_error = Some(e);
                     m.model = j(py, Value::Null)?;
@@ -148,7 +151,7 @@ impl<'py> Model<'py> {
             kw.push(("trust_remote_code", j(py, true)?));
         }
         if !cpu {
-            let memory = module(py, "builtins")?.a("dict")?.c(&[], &[])?;
+            let memory = dict(py);
             if let Some(map) = self.settings.get("max_memory").as_object() {
                 for (k, v) in map {
                     let key = if k.chars().all(|c| c.is_ascii_digit()) {
@@ -179,31 +182,25 @@ impl<'py> Model<'py> {
         Ok(kw)
     }
     pub fn layers(&self) -> Result<O<'py>> {
-        let base = if !module(self.py, "builtins")?
-            .m(
-                "isinstance",
-                &[self.model.clone(), module(self.py, "peft")?.a("PeftModel")?],
-                &[],
-            )?
-            .empty()?
+        let base = if self
+            .model
+            .instance_of(&module(self.py, "peft")?.a("PeftModel")?)?
         {
             self.model.a("base_model.model")?
         } else {
             self.model.clone()
         };
-        base.a("model.language_model.layers")
-            .or_else(|_| base.a("model.layers"))
+        match optional(base.a("model.language_model.layers"))? {
+            Some(layers) => Ok(layers),
+            None => base.a("model.layers"),
+        }
     }
     pub fn layer_modules(&self, index: usize) -> Result<BTreeMap<String, Vec<O<'py>>>> {
         let layer = self.layers()?.item(index as isize)?;
         let mut modules: BTreeMap<String, Vec<O<'py>>> = BTreeMap::new();
-        let built = module(self.py, "builtins")?;
         let nn = module(self.py, "torch.nn")?.a("Module")?;
         let mut add = |component: &str, m: O<'py>| -> Result<()> {
-            if !built
-                .m("isinstance", &[m.clone(), nn.clone()], &[])?
-                .empty()?
-            {
+            if m.instance_of(&nn)? {
                 modules.entry(component.into()).or_default().push(m);
             }
             Ok(())
@@ -217,7 +214,7 @@ impl<'py> Model<'py> {
             ("attn.o_proj", "self_attn.out_proj"),
             ("mlp.down_proj", "shared_mlp.output_linear"),
         ] {
-            if let Ok(m) = layer.a(p) {
+            if let Some(m) = optional(layer.a(p))? {
                 add(c, m)?;
             }
         }
@@ -227,9 +224,9 @@ impl<'py> Model<'py> {
             ("feed_forward.experts", "w2"),
             ("moe.experts", "output_linear"),
         ] {
-            if let Ok(experts) = layer.a(path).and_then(|x| x.list()) {
+            if let Some(experts) = optional(layer.a(path).and_then(|x| x.list()))? {
                 for expert in experts {
-                    if let Ok(m) = expert.a(projection) {
+                    if let Some(m) = optional(expert.a(projection))? {
                         add("mlp.down_proj", m)?;
                     }
                 }
@@ -285,15 +282,12 @@ impl<'py> Model<'py> {
         Ok(())
     }
     pub fn reset(&mut self) -> Result<()> {
-        let name = self
-            .model
-            .a("config.name_or_path")
-            .and_then(|x| x.str())
+        let name = optional(self.model.a("config.name_or_path").and_then(|x| x.str()))?
             .unwrap_or_default();
         if name == self.settings.string("model") && !self.needs_reload {
             for pair in self.model.m("named_modules", &[], &[])?.list()? {
                 if pair.item(0)?.str()?.contains("lora_B") {
-                    if let Ok(w) = pair.item(1)?.a("weight") {
+                    if let Some(w) = optional(pair.item(1)?.a("weight"))? {
                         module(self.py, "torch.nn.init")?.m("zeros_", &[w], &[])?;
                     }
                 }
