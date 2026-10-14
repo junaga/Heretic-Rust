@@ -1,0 +1,6 @@
+/target/
+/.venv/
+/checkpoints/
+/tmp/
+*.log*
+/dist/

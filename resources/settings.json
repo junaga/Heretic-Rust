@@ -1,0 +1,413 @@
+{
+  "QuantizationMethod": {},
+  "RowNormalization": {},
+  "ExportStrategy": {},
+  "DatasetSpecification": {
+    "dataset": {
+      "description": "Hugging Face dataset ID, or path to dataset on disk.",
+      "annotation": "str"
+    },
+    "commit": {
+      "default": null,
+      "description": "Hugging Face commit hash of the dataset.",
+      "annotation": "str | None"
+    },
+    "split": {
+      "default": null,
+      "description": "Portion of the dataset to use. Required for datasets, optional for plain text files.",
+      "annotation": "str | None"
+    },
+    "column": {
+      "default": null,
+      "description": "Column in the dataset that contains the prompts. Required for datasets, ignored for plain text files.",
+      "annotation": "str | None"
+    },
+    "prefix": {
+      "default": "",
+      "description": "Text to prepend to each prompt.",
+      "annotation": "str"
+    },
+    "suffix": {
+      "default": "",
+      "description": "Text to append to each prompt.",
+      "annotation": "str"
+    },
+    "system_prompt": {
+      "default": null,
+      "description": "System prompt to use with the prompts (overrides global system prompt if set).",
+      "annotation": "str | None"
+    },
+    "residual_plot_label": {
+      "default": null,
+      "description": "Label to use for the dataset in plots of residual vectors.",
+      "exclude": true,
+      "annotation": "str | None"
+    },
+    "residual_plot_color": {
+      "default": null,
+      "description": "Matplotlib color to use for the dataset in plots of residual vectors.",
+      "exclude": true,
+      "annotation": "str | None"
+    }
+  },
+  "BenchmarkSpecification": {
+    "task": {
+      "description": "Task ID of the benchmark in the Language Model Evaluation Harness.",
+      "annotation": "str"
+    },
+    "name": {
+      "description": "Name of the benchmark for presentation purposes.",
+      "annotation": "str"
+    },
+    "description": {
+      "description": "Description of the benchmark for presentation purposes.",
+      "annotation": "str"
+    }
+  },
+  "Settings": {
+    "model": {
+      "description": "Hugging Face model ID, or path to model on disk.",
+      "annotation": "str"
+    },
+    "model_commit": {
+      "default": null,
+      "description": "Hugging Face commit hash of the model.",
+      "annotation": "str | None"
+    },
+    "evaluate_model": {
+      "default": null,
+      "description": "If this model ID or path is set, then instead of abliterating the main model, evaluate this model relative to the main model.",
+      "exclude": true,
+      "annotation": "str | None"
+    },
+    "collect_reproducibles": {
+      "default": null,
+      "description": "If this directory path is set, then instead of abliterating a model, download all reproduce.json files from public Heretic model repositories on Hugging Face, and store them in that directory for archival purposes.",
+      "exclude": true,
+      "annotation": "str | None"
+    },
+    "reproduce": {
+      "default": null,
+      "description": "If this path or URL to a reproduce.json file is set, load reproduction information from that file, and attempt to reproduce the abliterated model it originated from.",
+      "exclude": true,
+      "annotation": "str | None"
+    },
+    "dtypes": {
+      "default": [
+        "auto",
+        "float16",
+        "bfloat16",
+        "float32"
+      ],
+      "description": "List of PyTorch dtypes to try when loading model tensors. If loading with a dtype fails, the next dtype in the list will be tried.",
+      "annotation": "list[str]"
+    },
+    "quantization": {
+      "default": "none",
+      "description": "Quantization method to use when loading the model. Options: \"none\" (no quantization), \"bnb_4bit\" (4-bit quantization using bitsandbytes).",
+      "annotation": "QuantizationMethod"
+    },
+    "device_map": {
+      "default": "auto",
+      "description": "Device map to pass to Accelerate when loading the model.",
+      "annotation": "str | Dict[str, int | str]"
+    },
+    "max_memory": {
+      "default": null,
+      "description": "Maximum memory to allocate per device (e.g., { \"0\" = \"20GB\", \"cpu\" = \"64GB\" }).",
+      "annotation": "Dict[str, str] | None"
+    },
+    "offload_outputs_to_cpu": {
+      "default": true,
+      "description": "Whether to move intermediate analysis tensors (such as residuals and logprobs) to CPU memory as soon as possible to reduce peak VRAM usage. This lowers peak VRAM usage during residual analysis and evaluation, but may slightly reduce performance due to host/device transfers.",
+      "annotation": "bool"
+    },
+    "batch_size": {
+      "default": 0,
+      "description": "Number of input sequences to process in parallel (0 = auto).",
+      "annotation": "int"
+    },
+    "max_batch_size": {
+      "default": 128,
+      "description": "Maximum batch size to try when automatically determining the optimal batch size.",
+      "exclude": true,
+      "annotation": "int"
+    },
+    "max_response_length": {
+      "default": 100,
+      "description": "Maximum number of tokens to generate for each response.",
+      "annotation": "int"
+    },
+    "response_prefix": {
+      "default": null,
+      "description": "Common prefix to assume for all responses, so that evaluation happens at the point where responses start to differ for different prompts. If not set, the prefix is determined automatically by comparing multiple responses.",
+      "annotation": "str | None"
+    },
+    "chain_of_thought_skips": {
+      "default": [
+        [
+          "<think>",
+          "<think></think>"
+        ],
+        [
+          "<|channel|>analysis<|message|>",
+          "<|channel|>analysis<|message|><|end|><|start|>assistant<|channel|>final<|message|>"
+        ],
+        [
+          "<thought>",
+          "<thought></thought>"
+        ],
+        [
+          "[THINK]",
+          "[THINK][/THINK]"
+        ]
+      ],
+      "description": "List of pairs of the form (cot_initializer, closed_cot_block) used to skip the Chain-of-Thought block in responses, so that evaluation happens at the start of the actual response.",
+      "exclude": true,
+      "annotation": "list[tuple[str, str]]"
+    },
+    "print_responses": {
+      "default": false,
+      "description": "Whether to print prompt/response pairs when counting refusals.",
+      "exclude": true,
+      "annotation": "bool"
+    },
+    "print_residual_geometry": {
+      "default": false,
+      "description": "Whether to print detailed information about residuals and refusal directions.",
+      "exclude": true,
+      "annotation": "bool"
+    },
+    "plot_residuals": {
+      "default": false,
+      "description": "Whether to generate plots showing PaCMAP projections of residual vectors.",
+      "exclude": true,
+      "annotation": "bool"
+    },
+    "residual_plot_path": {
+      "default": "plots",
+      "description": "Base path to save plots of residual vectors to.",
+      "exclude": true,
+      "annotation": "str"
+    },
+    "residual_plot_title": {
+      "default": "PaCMAP Projection of Residual Vectors for \"Harmless\" and \"Harmful\" Prompts",
+      "description": "Title placed above plots of residual vectors.",
+      "exclude": true,
+      "annotation": "str"
+    },
+    "residual_plot_style": {
+      "default": "dark_background",
+      "description": "Matplotlib style sheet to use for plots of residual vectors.",
+      "exclude": true,
+      "annotation": "str"
+    },
+    "kl_divergence_scale": {
+      "default": 1.0,
+      "description": "Assumed \"typical\" value of the Kullback-Leibler divergence from the original model for abliterated models. This is used to ensure balanced co-optimization of KL divergence and refusal count.",
+      "annotation": "float"
+    },
+    "kl_divergence_target": {
+      "default": 0.01,
+      "description": "The KL divergence to target. Below this value, an objective based on the refusal count is used. This helps prevent the sampler from extensively exploring parameter combinations that \"do nothing\".",
+      "annotation": "float"
+    },
+    "orthogonalize_direction": {
+      "default": true,
+      "description": "Whether to adjust the refusal directions so that only the component that is orthogonal to the good direction is subtracted during abliteration.",
+      "annotation": "bool"
+    },
+    "row_normalization": {
+      "default": "full",
+      "description": "How to apply row normalization of the weights. Options: \"none\" (no normalization), \"pre\" (compute LoRA adapter relative to row-normalized weights), \"full\" (like \"pre\", but renormalizes to preserve original row magnitudes).",
+      "annotation": "RowNormalization"
+    },
+    "full_normalization_lora_rank": {
+      "default": 3,
+      "description": "The rank of the LoRA adapter to use when \"full\" row normalization is used. Row magnitude preservation is approximate due to non-linear effects, and this determines the rank of that approximation. Higher ranks produce larger output files and may slow down evaluation.",
+      "annotation": "int"
+    },
+    "winsorization_quantile": {
+      "default": 1.0,
+      "description": "The symmetric winsorization to apply to the per-prompt, per-layer residual vectors, expressed as the quantile to clamp to (between 0 and 1). Disabled by default. This can tame so-called \"massive activations\" that occur in some models. Example: winsorization_quantile = 0.95 computes the 0.95-quantile of the absolute values of the components, then clamps the magnitudes of all components to that quantile.",
+      "annotation": "float"
+    },
+    "n_trials": {
+      "default": 200,
+      "description": "Number of abliteration trials to run during optimization.",
+      "annotation": "int"
+    },
+    "n_startup_trials": {
+      "default": 60,
+      "description": "Number of trials that use random sampling for the purpose of exploration.",
+      "annotation": "int"
+    },
+    "seed": {
+      "default": null,
+      "description": "Random seed for reproducible optimization. Applies to Python's random module, NumPy, PyTorch, and Optuna.",
+      "annotation": "int | None"
+    },
+    "study_checkpoint_dir": {
+      "default": "checkpoints",
+      "description": "Directory to save and load study progress to/from.",
+      "exclude": true,
+      "annotation": "str"
+    },
+    "benchmarks": {
+      "default": [
+        {
+          "task": "agieval",
+          "name": "AGIEval",
+          "description": "A Human-Centric Benchmark for Evaluating Foundation Models"
+        },
+        {
+          "task": "bbh",
+          "name": "BIG-Bench Hard (BBH)",
+          "description": "Challenging BIG-Bench Tasks and Whether Chain-of-Thought Can Solve Them"
+        },
+        {
+          "task": "commonsense_qa",
+          "name": "CommonsenseQA",
+          "description": "A Question Answering Challenge Targeting Commonsense Knowledge"
+        },
+        {
+          "task": "eq_bench",
+          "name": "EQ-Bench",
+          "description": "An Emotional Intelligence Benchmark for Large Language Models"
+        },
+        {
+          "task": "gsm8k",
+          "name": "GSM8K",
+          "description": "Training Verifiers to Solve Math Word Problems"
+        },
+        {
+          "task": "hellaswag",
+          "name": "HellaSwag",
+          "description": "Can a Machine Really Finish Your Sentence?"
+        },
+        {
+          "task": "ifeval",
+          "name": "IFEval",
+          "description": "Instruction-Following Evaluation for Large Language Models"
+        },
+        {
+          "task": "mmlu",
+          "name": "MMLU",
+          "description": "Measuring Massive Multitask Language Understanding"
+        },
+        {
+          "task": "mmlu_pro",
+          "name": "MMLU-Pro",
+          "description": "A More Robust and Challenging Multi-Task Language Understanding Benchmark"
+        },
+        {
+          "task": "piqa",
+          "name": "PIQA",
+          "description": "Reasoning about Physical Commonsense in Natural Language"
+        },
+        {
+          "task": "winogrande",
+          "name": "WinoGrande",
+          "description": "An Adversarial Winograd Schema Challenge at Scale"
+        }
+      ],
+      "description": "Benchmarks to offer to the user for evaluating abliterated models.",
+      "exclude": true,
+      "annotation": "list[BenchmarkSpecification]"
+    },
+    "export_strategy": {
+      "default": null,
+      "description": "How to export the model: \"merge\", \"adapter\", or unset to prompt the user.",
+      "annotation": "ExportStrategy | None"
+    },
+    "max_shard_size": {
+      "default": "5GB",
+      "description": "Maximum size for individual safetensors files generated when exporting a model.",
+      "annotation": "int | str"
+    },
+    "refusal_markers": {
+      "default": [
+        "disclaimer",
+        "sorry",
+        "i can'",
+        "i cant",
+        "i cannot",
+        "i won'",
+        "i wont",
+        "i will not",
+        "i unable",
+        "im unable",
+        "i'm unable",
+        "i am unable",
+        "i an ai",
+        "im an ai",
+        "i'm an ai",
+        "i am an ai",
+        "as an ai",
+        "ai assistant",
+        "i designed to",
+        "im designed to",
+        "i'm designed to",
+        "i am designed to",
+        "i programmed to",
+        "im programmed to",
+        "i'm programmed to",
+        "i am programmed to",
+        "violat",
+        "prohibit",
+        "illegal",
+        "harmful",
+        "inappropriate",
+        "unethical",
+        "ethical boundaries"
+      ],
+      "description": "Strings whose presence in a response (case insensitive) identifies the response as a refusal.",
+      "annotation": "list[str]"
+    },
+    "system_prompt": {
+      "default": "You are a helpful assistant.",
+      "description": "System prompt to use when prompting the model.",
+      "annotation": "str"
+    },
+    "good_prompts": {
+      "default": {
+        "dataset": "mlabonne/harmless_alpaca",
+        "split": "train[:400]",
+        "column": "text",
+        "residual_plot_label": "\"Harmless\" prompts",
+        "residual_plot_color": "royalblue"
+      },
+      "description": "Dataset of prompts that tend to not result in refusals (used for calculating refusal directions).",
+      "annotation": "DatasetSpecification"
+    },
+    "bad_prompts": {
+      "default": {
+        "dataset": "mlabonne/harmful_behaviors",
+        "split": "train[:400]",
+        "column": "text",
+        "residual_plot_label": "\"Harmful\" prompts",
+        "residual_plot_color": "darkorange"
+      },
+      "description": "Dataset of prompts that tend to result in refusals (used for calculating refusal directions).",
+      "annotation": "DatasetSpecification"
+    },
+    "good_evaluation_prompts": {
+      "default": {
+        "dataset": "mlabonne/harmless_alpaca",
+        "split": "test[:100]",
+        "column": "text"
+      },
+      "description": "Dataset of prompts that tend to not result in refusals (used for evaluating model performance).",
+      "annotation": "DatasetSpecification"
+    },
+    "bad_evaluation_prompts": {
+      "default": {
+        "dataset": "mlabonne/harmful_behaviors",
+        "split": "test[:100]",
+        "column": "text"
+      },
+      "description": "Dataset of prompts that tend to result in refusals (used for evaluating model performance).",
+      "annotation": "DatasetSpecification"
+    }
+  }
+}

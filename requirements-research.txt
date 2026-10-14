@@ -1,0 +1,6 @@
+-r requirements.txt
+geom-median~=0.1
+imageio~=2.37
+matplotlib~=3.10
+pacmap~=0.8
+scikit-learn~=1.7

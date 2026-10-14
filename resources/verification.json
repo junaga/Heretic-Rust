@@ -1,0 +1,59 @@
+{
+  "baseline": {
+    "repository": "https://github.com/p-e-w/heretic",
+    "tag": "v1.4.0",
+    "commit": "6ea3b8d778d047b4b3b7c5b843e21c5bea98ee8d",
+    "parity_verified": false
+  },
+  "implementation": {
+    "application": "Rust",
+    "interoperability": "PyO3 with CPython third-party frameworks",
+    "imports_upstream_heretic_in_production": false,
+    "python_free": false
+  },
+  "verification": {
+    "passed_tests": 12,
+    "failed_tests": 0,
+    "ignored_tests_in_full_run": 0,
+    "backend": "CPU",
+    "fixture": "Deterministic 4-layer Llama, 16 hidden dimensions, 32 vocabulary entries",
+    "exact_comparisons": [
+      "Exported default configuration",
+      "CLI configuration overrides",
+      "Residual tensors and means",
+      "First-token log probabilities",
+      "Greedy responses",
+      "Winsorized residuals",
+      "All adapter tensors for none/pre/full normalization, per-layer and interpolated global directions",
+      "Four Optuna trials including TPE exploitation: parameters, metrics and objectives",
+      "Selected adapter tensors against upstream",
+      "Byte-identical native adapter reproduction from exported v2 record"
+    ],
+    "functional_checks": [
+      "Checkpoint resume",
+      "Merged export and reset after merge",
+      "Text and saved-dataset slicing",
+      "Residual geometry",
+      "Four PaCMAP plots and animated GIF",
+      "Configuration precedence and privacy exclusions"
+    ]
+  },
+  "unverified": [
+    "CUDA/ROCm/XPU/MPS/NPU and other accelerators",
+    "4-bit quantization and quantized merging on accelerator hardware",
+    "Real pretrained MoE, hybrid and multimodal models",
+    "Live Hugging Face publishing and archive collection",
+    "Interactive notebook flows",
+    "Full Language Model Evaluation Harness benchmark runs"
+  ],
+  "differences": [
+    "Third-party Python framework runtime remains required; no upstream Heretic Python application dependency",
+    "Terminal presentation differs",
+    "Additional --non-interactive, --output and --check-config options",
+    "Native local exports include reproduction metadata",
+    "Reproduction metadata identifies the Rust implementation"
+  ],
+  "full_parity_established": false,
+  "repeat": "HERETIC_UPSTREAM=\"/usr/local/dev/Heretic-Rust/tmp/upstream\" make -C /usr/local/dev/Heretic-Rust parity",
+  "run": "/usr/local/dev/Heretic-Rust/target/release/heretic MODEL"
+}
